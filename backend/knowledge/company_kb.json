@@ -1,0 +1,110 @@
+{
+    "company": {
+        "name": "AI Call Center",
+        "phone": "+1234567890",
+        "hours": "Monday-Friday 9AM-5PM EST",
+        "website": "https://example.com"
+    },
+    "greeting": "Hello! Thank you for calling AI Call Center. My name is AI Assistant. How may I help you today?",
+    "farewell": "Thank you for calling AI Call Center. Have a wonderful day!",
+    "intents": {
+        "billing": {
+            "keywords": [
+                "bill",
+                "payment",
+                "charge",
+                "invoice",
+                "balance",
+                "pay",
+                "cost"
+            ],
+            "response": "I'd be happy to help you with your billing inquiry.",
+            "actions": [
+                "verify_customer",
+                "fetch_billing"
+            ]
+        },
+        "technical_support": {
+            "keywords": [
+                "not working",
+                "broken",
+                "slow",
+                "issue",
+                "problem",
+                "down",
+                "internet",
+                "wifi"
+            ],
+            "response": "I understand you're experiencing a technical issue. Let me help you with that.",
+            "actions": [
+                "verify_customer",
+                "troubleshoot",
+                "create_ticket"
+            ]
+        },
+        "account_info": {
+            "keywords": [
+                "account",
+                "information",
+                "details",
+                "profile",
+                "plan"
+            ],
+            "response": "I can provide your account information.",
+            "actions": [
+                "verify_customer",
+                "fetch_account"
+            ]
+        },
+        "new_service": {
+            "keywords": [
+                "new",
+                "activate",
+                "sign up",
+                "order",
+                "sim card"
+            ],
+            "response": "I can help you with new service activation.",
+            "actions": [
+                "collect_info",
+                "create_order"
+            ]
+        }
+    },
+    "faq": {
+        "What are your business hours?": "We're open Monday through Friday, 9 AM to 5 PM Eastern Time.",
+        "How do I pay my bill?": "You can pay your bill online at our website, by phone, or by mailing a check to our office.",
+        "How do I reset my password?": "You can reset your password on our website by clicking 'Forgot Password', or I can send you a reset link to your email.",
+        "What plans do you offer?": "We offer Basic, Standard, and Premium plans. Would you like me to transfer you to sales for details?",
+        "How do I cancel my service?": "I can help you with that. May I ask why you're considering cancellation? There might be options to address your concerns."
+    },
+    "troubleshooting": {
+        "internet_slow": [
+            "Let me help you troubleshoot. First, have you tried restarting your router?",
+            "Are other devices in your home also experiencing slow speeds?",
+            "Let me check if there's a service outage in your area.",
+            "Can you tell me what speed you're currently getting?"
+        ],
+        "no_connection": [
+            "I'm sorry you're having connection issues. Let's try a few things.",
+            "First, please check that all cables are securely connected to your router.",
+            "Try unplugging your router for 30 seconds, then plug it back in.",
+            "Are you seeing any lights on your router? What colors are they?"
+        ],
+        "wifi_issues": [
+            "Let's troubleshoot your WiFi connection.",
+            "Are you able to connect with a cable directly to the router?",
+            "How many devices are connected to your WiFi?",
+            "Have you tried forgetting the network and reconnecting?"
+        ]
+    },
+    "verification": {
+        "prompts": [
+            "For security purposes, can you please provide your customer ID?",
+            "May I have your account number to verify your identity?",
+            "Can you confirm your phone number on file?"
+        ],
+        "success": "Thank you for verifying your identity.",
+        "failure": "I'm sorry, I couldn't verify that information. Would you like me to transfer you to an agent?"
+    }
+}

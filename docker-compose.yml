@@ -1,0 +1,78 @@
+version: '3.8'
+
+services:
+  asterisk:
+    build:
+      context: ./docker/asterisk
+      dockerfile: Dockerfile
+    container_name: asterisk
+    hostname: asterisk
+    ports:
+      - "5060:5060/udp" # Listen on ALL interfaces (0.0.0.0)
+      - "5060:5060/tcp" # Listen on ALL interfaces (0.0.0.0)
+      - "10000-10099:10000-10099/udp" # RTP ports
+    volumes:
+      - ./docker/asterisk/extensions.conf:/etc/asterisk/extensions.conf
+      - ./docker/asterisk/pjsip.conf:/etc/asterisk/pjsip.conf
+      - ./docker/asterisk/modules.conf:/etc/asterisk/modules.conf
+      - ./docker/asterisk/asterisk.conf:/etc/asterisk/asterisk.conf
+      - asterisk-logs:/var/log/asterisk
+    networks:
+      callcenter:
+        ipv4_address: 172.18.0.2
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: backend
+    ports:
+      - "8000:8000"
+      - "4573:4573"
+    volumes:
+      - ./backend:/app
+      - ./backend/knowledge:/app/knowledge
+      - backend-data:/app/data
+    environment:
+      - DATABASE_URL=sqlite:///./data/callcenter.db
+      - ASTERISK_HOST=asterisk
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+    depends_on:
+      - asterisk
+    networks:
+      callcenter:
+        ipv4_address: 172.18.0.3
+    restart: unless-stopped
+    command: python main.py
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: dashboard
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./dashboard/src:/app/src
+      - ./dashboard/public:/app/public
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+    networks:
+      callcenter:
+    restart: unless-stopped
+
+volumes:
+  asterisk-logs:
+  backend-data:
+
+
+networks:
+  callcenter:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.18.0.0/16
