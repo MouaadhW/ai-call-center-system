@@ -36,7 +36,7 @@ class AIAgent:
     
     async def process_input(self, user_input, conversation_history, call_id=None):
         """
-        Process user input and generate response
+        Process user input and generate response with better error handling
         
         Args:
             user_input: User's spoken text
@@ -57,10 +57,34 @@ class AIAgent:
                     "intent": intent,
                     "customer_id": None,
                     "verified": False,
-                    "data_collected": {}
+                    "data_collected": {},
+                    "retry_count": 0
                 }
             else:
                 self.conversation_state[call_id]["intent"] = intent
+            
+            state = self.conversation_state[call_id]
+            
+            # Extract customer ID from input if present
+            import re
+            id_patterns = [
+                r'\b(\d{1,6})\b',  # Any 1-6 digit number
+                r'id\s(?:is\s)?(\d+)',
+                r'number\s(?:is\s*)?(\d+)',
+            ]
+            
+            for pattern in id_patterns:
+                match = re.search(pattern, user_input, re.IGNORECASE)
+                if match:
+                    potential_id = match.group(1)
+                    # Verify it's a valid customer
+                    customer = self.get_customer(potential_id)
+                    if customer:
+                        state["customer_id"] = potential_id
+                        state["verified"] = True
+                        state["awaiting_customer_id"] = False
+                        logger.info(f"Customer {potential_id} verified")
+                        break
             
             # Route to appropriate handler
             if intent == "greeting":
@@ -83,7 +107,17 @@ class AIAgent:
                 
         except Exception as e:
             logger.error(f"Error processing input: {e}")
-            return "I apologize, I'm having trouble processing your request. Let me transfer you to a human agent."
+            # Better error response
+            if call_id and call_id in self.conversation_state:
+                state = self.conversation_state[call_id]
+                state["retry_count"] = state.get("retry_count", 0) + 1
+                
+                if state["retry_count"] < 3:
+                    return "I apologize for the confusion. Could you please rephrase that?"
+                else:
+                    return "I'm having difficulty understanding. Let me connect you with a human agent who can better assist you."
+            else:
+                return "I apologize, I'm having trouble processing your request. Could you please try again?"
     
     def handle_greeting(self):
         """Handle greeting intent"""

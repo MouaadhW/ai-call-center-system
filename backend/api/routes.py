@@ -49,6 +49,79 @@ async def get_calls(skip: int = 0, limit: int = 100, db: Session = Depends(get_d
     calls = db.query(Call).order_by(Call.start_time.desc()).offset(skip).limit(limit).all()
     return calls
 
+@router.get("/calls/recent")
+async def get_recent_calls(limit: int = 10, db: Session = Depends(get_db)):
+    """Get recent calls with full details"""
+    calls = db.query(Call).order_by(Call.start_time.desc()).limit(limit).all()
+    
+    result = []
+    for call in calls:
+        result.append({
+            "id": call.id,
+            "caller_number": call.caller_number,
+            "customer_id": call.customer_id,
+            "start_time": call.start_time.isoformat() if call.start_time else None,
+            "end_time": call.end_time.isoformat() if call.end_time else None,
+            "duration": call.duration,
+            "intent": call.intent,
+            "status": call.status,
+            "resolution_status": call.resolution_status,
+            "transcript": call.transcript
+        })
+    
+    return result
+
+@router.get("/calls/live")
+async def get_live_calls():
+    """Get currently active calls"""
+    try:
+        from voiceproduction import active_calls
+        
+        live = []
+        for call_id, call_data in active_calls.items():
+            duration = (datetime.now() - call_data['start_time']).total_seconds()
+            live.append({
+                "call_id": call_id,
+                "duration": int(duration),
+                "message_count": len(call_data['history']),
+                "status": "active"
+            })
+        
+        return {
+            "active_calls": len(live),
+            "calls": live
+        }
+    except ImportError:
+        return {"active_calls": 0, "calls": []}
+
+@router.get("/calls/{call_id}/transcript")
+async def get_call_transcript(call_id: int, db: Session = Depends(get_db)):
+    """Get formatted transcript for a call"""
+    call = db.query(Call).filter(Call.id == call_id).first()
+    
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+    
+    # Parse transcript into messages
+    messages = []
+    if call.transcript:
+        for line in call.transcript.split('\n'):
+            if ':' in line:
+                role, content = line.split(':', 1)
+                messages.append({
+                    "role": role.strip().lower(),
+                    "content": content.strip()
+                })
+    
+    return {
+        "call_id": call.id,
+        "caller": call.caller_number,
+        "duration": call.duration,
+        "intent": call.intent,
+        "resolution": call.resolution_status,
+        "messages": messages
+    }
+
 @router.get("/calls/{call_id}")
 async def get_call(call_id: int, db: Session = Depends(get_db)):
     """Get call by ID"""
