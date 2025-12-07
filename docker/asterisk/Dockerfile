@@ -15,13 +15,15 @@ RUN mkdir -p /var/log/asterisk \
     && mkdir -p /var/spool/asterisk \
     && chown -R asterisk:asterisk /var/log/asterisk /var/spool/asterisk
 
-# Copy logger configuration
+# Copy configurations
 COPY logger.conf /etc/asterisk/logger.conf
+COPY stasis.conf /etc/asterisk/stasis.conf
+COPY modules.conf /etc/asterisk/modules.conf
 
 # Expose ports
 EXPOSE 5060/udp 5060/tcp 10000-10099/udp 4573
 
-# Run as asterisk user
+# Run as root (required for Stasis in some Docker setups)
 # USER asterisk
 
 # Start Asterisk with verbose logging
