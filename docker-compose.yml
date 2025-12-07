@@ -2,9 +2,7 @@ version: '3.8'
 
 services:
   asterisk:
-    build:
-      context: ./docker/asterisk
-      dockerfile: Dockerfile
+    image: andrius/asterisk:18
     container_name: asterisk
     hostname: asterisk
     ports:
@@ -12,15 +10,16 @@ services:
       - "5060:5060/tcp" # Listen on ALL interfaces (0.0.0.0)
       - "10000-10099:10000-10099/udp" # RTP ports
     volumes:
-      - ./docker/asterisk/extensions.conf:/etc/asterisk/extensions.conf
-      - ./docker/asterisk/pjsip.conf:/etc/asterisk/pjsip.conf
-      - ./docker/asterisk/modules.conf:/etc/asterisk/modules.conf
-      - ./docker/asterisk/asterisk.conf:/etc/asterisk/asterisk.conf
+      - ./docker/asterisk/extensions.conf:/etc/asterisk/extensions.conf:ro
+      - ./docker/asterisk/pjsip.conf:/etc/asterisk/pjsip.conf:ro
+      - ./docker/asterisk/modules.conf:/etc/asterisk/modules.conf:ro
+      - ./docker/asterisk/asterisk.conf:/etc/asterisk/asterisk.conf:ro
       - asterisk-logs:/var/log/asterisk
     networks:
       callcenter:
         ipv4_address: 172.18.0.2
     restart: unless-stopped
+    command: asterisk -f -vvv
 
   backend:
     build:
