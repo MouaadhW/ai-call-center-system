@@ -19,6 +19,10 @@ RUN mkdir -p /var/log/asterisk \
 COPY logger.conf /etc/asterisk/logger.conf
 COPY stasis.conf /etc/asterisk/stasis.conf
 COPY modules.conf /etc/asterisk/modules.conf
+COPY start-asterisk.sh /usr/local/bin/start-asterisk.sh
+
+# Make script executable
+RUN chmod +x /usr/local/bin/start-asterisk.sh
 
 # Expose ports
 EXPOSE 5060/udp 5060/tcp 10000-10099/udp 4573
