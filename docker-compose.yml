@@ -29,6 +29,8 @@ services:
     ports:
       - "8000:8000"
       - "4573:4573"
+      - "8001:8001"
+      - "8003:8003"
     volumes:
       - ./backend:/app
       - ./backend/knowledge:/app/knowledge
