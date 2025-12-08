@@ -13,6 +13,7 @@ openai-whisper==20231117
 
 # TTS (Text-to-Speech)
 piper-tts==1.2.0
+edge-tts==6.1.9
 
 # Audio Processing
 numpy==1.26.2

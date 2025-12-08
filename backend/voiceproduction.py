@@ -13,8 +13,15 @@ sys.path.insert(0, os.path.dirname(__file__))
 from agent.agent import AIAgent
 from db.database import SessionLocal
 from db.models import Call
+from tts.edgetts_engine import EdgeTTSEngine
+from fastapi.responses import FileResponse
+import config
 
 app = FastAPI()
+
+# Initialize Edge-TTS for natural human-like voice
+tts_engine = EdgeTTSEngine()
+logger.info("Edge-TTS engine initialized for natural voice synthesis")
 
 app.add_middleware(
     CORSMiddleware,
@@ -28,6 +35,37 @@ agent = AIAgent()
 
 # Store active calls
 active_calls = {}
+
+# TTS endpoint for natural voice synthesis
+@app.get("/tts")
+async def generate_tts(text: str):
+    """Generate natural-sounding speech using Edge-TTS"""
+    try:
+        logger.info(f"Generating TTS for: {text[:50]}...")
+        # Use +15% rate for faster speech (can adjust between +10% to +25%)
+        audio_file = await tts_engine.synthesize_async(text, rate="+15%")
+        
+        if audio_file:
+            # Convert to absolute path if needed
+            if not os.path.isabs(audio_file):
+                audio_file = os.path.join(os.getcwd(), audio_file)
+            
+            if os.path.exists(audio_file):
+                logger.info(f"Serving TTS file: {audio_file}")
+                return FileResponse(
+                    audio_file,
+                    media_type="audio/mpeg",
+                    filename="speech.mp3"
+                )
+            else:
+                logger.error(f"TTS file not found: {audio_file}")
+                return {"error": "TTS file not found"}, 500
+        else:
+            logger.error("TTS generation returned None")
+            return {"error": "Failed to generate speech"}, 500
+    except Exception as e:
+        logger.error(f"TTS error: {e}", exc_info=True)
+        return {"error": str(e)}, 500
 
 html = """
 <!DOCTYPE html>
@@ -236,12 +274,14 @@ html = """
         let synthesis = window.speechSynthesis;
         let ws;
         let isListening = false;
+        let isCallActive = false;
         let audioContext;
         let microphone;
         let analyser;
         let silenceTimeout;
         let lastSpeechTime = Date.now();
         let callId = null;
+        let currentAudio = null;  // Store current audio element to stop it when call ends
         
         // Check browser support
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -254,23 +294,40 @@ html = """
         // Test microphone access
         async function testMicrophone() {
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                // Request microphone with better settings for voice recognition
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true,
+                        sampleRate: 16000
+                    } 
+                });
+                
+                console.log('✅ Microphone access granted');
                 
                 // Setup audio context for level monitoring
                 audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 microphone = audioContext.createMediaStreamSource(stream);
                 analyser = audioContext.createAnalyser();
                 analyser.fftSize = 256;
+                analyser.smoothingTimeConstant = 0.8;
                 microphone.connect(analyser);
                 
                 const dataArray = new Uint8Array(analyser.frequencyBinCount);
                 
                 function updateLevel() {
-                    if (!isListening) return;
+                    if (!isListening && !isCallActive) return;
                     analyser.getByteFrequencyData(dataArray);
                     const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
                     const level = Math.min(100, (average / 128) * 100);
                     micLevel.style.width = level + '%';
+                    
+                    // Log if microphone is detecting sound
+                    if (level > 5) {
+                        console.log('🎤 Microphone detecting sound, level:', level.toFixed(1) + '%');
+                    }
+                    
                     requestAnimationFrame(updateLevel);
                 }
                 
@@ -279,75 +336,173 @@ html = """
                 
                 return true;
             } catch (err) {
+                console.error('❌ Microphone error:', err);
                 status.textContent = '❌ Microphone access denied. Check settings.';
                 status.className = 'status error';
+                alert('Microphone access is required!\\n\\nPlease:\\n1. Click the lock icon in your browser\\n2. Allow microphone access\\n3. Refresh the page');
                 return false;
             }
         }
         
         function initRecognition() {
             recognition = new SpeechRecognition();
-            recognition.continuous = false;
-            recognition.interimResults = false;
+            
+            // IMPROVED SETTINGS FOR BETTER VOICE DETECTION
+            recognition.continuous = true;  // Keep listening continuously
+            recognition.interimResults = true;  // Get partial results as user speaks
             recognition.lang = 'en-US';
-            recognition.maxAlternatives = 1;
+            recognition.maxAlternatives = 3;  // Get multiple alternatives for better accuracy
+            
+            let finalTranscript = '';
+            let interimTranscript = '';
             
             recognition.onstart = function() {
+                console.log('🎤 Speech recognition started');
                 lastSpeechTime = Date.now();
+                finalTranscript = '';
+                interimTranscript = '';
                 startSilenceDetection();
             };
             
             recognition.onresult = function(event) {
-                const text = event.results[0][0].transcript;
-                const confidence = event.results[0][0].confidence;
+                console.log('📝 Recognition result received, events:', event.results.length);
                 
-                console.log('Recognized:', text, 'Confidence:', confidence);
+                interimTranscript = '';
+                finalTranscript = '';
                 
-                if (confidence > 0.5) {
-                    addMessage('user', text);
+                // Process all results
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    const result = event.results[i];
+                    const transcript = result[0].transcript;
+                    const confidence = result[0].confidence || 0.8; // Default confidence if not provided
                     
-                    if (ws && ws.readyState === WebSocket.OPEN) {
-                        ws.send(JSON.stringify({
-                            type: 'speech',
-                            text: text,
-                            confidence: confidence
-                        }));
-                        status.textContent = '🤖 AI is thinking...';
-                        status.className = 'status speaking';
+                    console.log(`Result ${i}: "${transcript}" (${result.isFinal ? 'FINAL' : 'interim'}, confidence: ${confidence})`);
+                    
+                    if (result.isFinal) {
+                        finalTranscript += transcript + ' ';
+                    } else {
+                        interimTranscript += transcript;
+                        // Show interim results to user
+                        status.textContent = `🎤 Hearing: "${interimTranscript}"`;
                     }
-                } else {
-                    console.log('Low confidence, ignoring');
-                    if (isListening) {
-                        setTimeout(() => recognition.start(), 500);
+                }
+                
+                // Process final transcript when available
+                if (finalTranscript.trim().length > 0) {
+                    const text = finalTranscript.trim();
+                    console.log('✅ Final transcript:', text);
+                    
+                    // Lower confidence threshold - accept anything above 0.3
+                    const avgConfidence = Array.from(event.results)
+                        .filter(r => r.isFinal)
+                        .reduce((sum, r) => sum + (r[0].confidence || 0.8), 0) / event.results.length;
+                    
+                    console.log('Average confidence:', avgConfidence);
+                    
+                    if (avgConfidence > 0.3 || text.length > 2) {  // Accept low confidence if text is meaningful
+                        addMessage('user', text);
+                        
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            // Stop listening while processing
+                            isListening = false;
+                            recognition.stop();
+                            
+                            ws.send(JSON.stringify({
+                                type: 'speech',
+                                text: text,
+                                confidence: avgConfidence
+                            }));
+                            status.textContent = '🤖 AI is thinking...';
+                            status.className = 'status speaking';
+                        }
+                    } else {
+                        console.log('⚠️ Low confidence, but continuing to listen...');
                     }
+                    
+                    finalTranscript = '';
                 }
             };
             
+            recognition.onspeechstart = function() {
+                console.log('🗣️ Speech detected!');
+                clearTimeout(silenceTimeout);
+                status.textContent = '🎤 Listening... (speaking detected)';
+            };
+            
+            recognition.onspeechend = function() {
+                console.log('🔇 Speech ended');
+                // Give a moment for final results
+                setTimeout(() => {
+                    if (finalTranscript.trim().length > 0 && isListening) {
+                        const text = finalTranscript.trim();
+                        addMessage('user', text);
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            isListening = false;
+                            recognition.stop();
+                            ws.send(JSON.stringify({
+                                type: 'speech',
+                                text: text,
+                                confidence: 0.8
+                            }));
+                            status.textContent = '🤖 AI is thinking...';
+                            status.className = 'status speaking';
+                        }
+                        finalTranscript = '';
+                    }
+                }, 500);
+            };
+            
             recognition.onend = function() {
+                console.log('⏹️ Recognition ended');
+                
                 if (isListening && (Date.now() - lastSpeechTime) < 30000) {
+                    console.log('🔄 Restarting recognition...');
                     setTimeout(() => {
                         if (isListening) {
-                            recognition.start();
+                            try {
+                                recognition.start();
+                            } catch (e) {
+                                console.error('Restart error:', e);
+                                if (!e.message.includes('already started')) {
+                                    setTimeout(() => {
+                                        if (isListening) recognition.start();
+                                    }, 1000);
+                                }
+                            }
                         }
-                    }, 500);
+                    }, 300);
                 }
             };
             
             recognition.onerror = function(event) {
-                console.error('Recognition error:', event.error);
+                console.error('❌ Recognition error:', event.error);
                 
                 if (event.error === 'no-speech') {
-                    status.textContent = '🎤 No speech detected. Speak louder.';
-                    if (isListening) {
-                        setTimeout(() => recognition.start(), 1000);
-                    }
-                } else if (event.error === 'not-allowed') {
+                    console.log('⚠️ No speech detected, continuing to listen...');
+                    status.textContent = '🎤 Listening... (speak now)';
+                    // Don't stop, just continue
+                } else if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
                     status.textContent = '❌ Microphone blocked. Enable in settings.';
                     status.className = 'status error';
+                    alert('Microphone access denied!\\n\\nPlease:\\n1. Check browser settings\\n2. Allow microphone access\\n3. Refresh the page');
                     stopBtn.click();
+                } else if (event.error === 'audio-capture') {
+                    status.textContent = '❌ Microphone error. Check connection.';
+                    status.className = 'status error';
+                } else if (event.error === 'network') {
+                    status.textContent = '❌ Network error. Check connection.';
+                    status.className = 'status error';
                 } else {
+                    // For other errors, continue listening
+                    console.log('⚠️ Other error, continuing...');
                     if (isListening) {
-                        setTimeout(() => recognition.start(), 1000);
+                        setTimeout(() => {
+                            try {
+                                recognition.start();
+                            } catch (e) {
+                                console.error('Error restarting:', e);
+                            }
+                        }, 1000);
                     }
                 }
             };
@@ -366,14 +521,63 @@ html = """
             }, 5000);
         }
         
-        function speak(text) {
+        // Use Edge-TTS for natural human-like voice (backend)
+        async function speak(text) {
+            return new Promise(async (resolve) => {
+                try {
+                    console.log('🔊 Generating natural speech for:', text.substring(0, 50) + '...');
+                    
+                    // Encode text for URL
+                    const encodedText = encodeURIComponent(text);
+                    
+                    // Request TTS from backend (Edge-TTS)
+                    const audioUrl = `/tts?text=${encodedText}`;
+                    const audio = new Audio(audioUrl);
+                    currentAudio = audio;  // Store reference to stop if call ends
+                    
+                    audio.onloadeddata = () => {
+                        console.log('✅ Audio loaded, playing...');
+                        status.textContent = '🔊 AI is speaking...';
+                    };
+                    
+                    audio.onended = () => {
+                        console.log('✅ Finished speaking');
+                        if (currentAudio === audio) {
+                            currentAudio = null;  // Clear reference when done
+                        }
+                        resolve();
+                    };
+                    
+                    audio.onerror = (e) => {
+                        console.error('❌ Audio playback error:', e);
+                        if (currentAudio === audio) {
+                            currentAudio = null;  // Clear reference on error
+                        }
+                        // Fallback to browser TTS if Edge-TTS fails
+                        console.log('⚠️ Falling back to browser TTS...');
+                        fallbackSpeak(text).then(resolve);
+                    };
+                    
+                    // Play the audio
+                    await audio.play();
+                    
+                } catch (error) {
+                    console.error('❌ TTS error:', error);
+                    // Fallback to browser TTS
+                    await fallbackSpeak(text);
+                    resolve();
+                }
+            });
+        }
+        
+        // Fallback to browser TTS if Edge-TTS fails
+        function fallbackSpeak(text) {
             return new Promise((resolve) => {
                 synthesis.cancel();
                 
-                // Split long text into chunks
                 const chunks = text.match(/[^.!?]+[.!?]+/g) || [text];
-                
                 let index = 0;
+                
                 function speakNext() {
                     if (index >= chunks.length) {
                         resolve();
@@ -381,15 +585,15 @@ html = """
                     }
                     
                     const utterance = new SpeechSynthesisUtterance(chunks[index].trim());
-                    utterance.rate = 0.95;
-                    utterance.pitch = 1.0;
+                    utterance.rate = 0.92;
+                    utterance.pitch = 1.05;
                     utterance.volume = 1.0;
                     
-                    // Try to use a better voice
                     const voices = synthesis.getVoices();
                     const preferredVoice = voices.find(v => 
                         v.name.includes('Samantha') || 
                         v.name.includes('Karen') ||
+                        v.name.includes('Aria') ||
                         v.name.includes('Female')
                     );
                     if (preferredVoice) {
@@ -430,6 +634,7 @@ html = """
             ws = new WebSocket(protocol + '//' + window.location.host + '/ws');
             
             ws.onopen = function() {
+                isCallActive = true;
                 status.textContent = '📞 Connecting...';
                 status.className = 'status ready';
                 ws.send(JSON.stringify({ type: 'start' }));
@@ -469,11 +674,28 @@ html = """
                         status.textContent = '🎤 Listening... (speak now)';
                         status.className = 'status listening';
                         
-                        if (isListening) {
-                            setTimeout(() => {
-                                if (isListening) recognition.start();
-                            }, 500);
+                        // Resume listening after AI finishes speaking
+                        isListening = true;
+                        
+                        if (!recognition) {
+                            initRecognition();
                         }
+                        
+                        setTimeout(() => {
+                            if (isListening && isCallActive) {
+                                try {
+                                    recognition.start();
+                                    console.log('🎤 Recognition restarted after AI response');
+                                } catch (e) {
+                                    console.error('Error starting recognition:', e);
+                                    if (!e.message.includes('already started')) {
+                                        setTimeout(() => {
+                                            if (isListening) recognition.start();
+                                        }, 500);
+                                    }
+                                }
+                            }
+                        }, 800);  // Wait a bit longer for better recognition
                     }
                 }
             };
@@ -493,20 +715,52 @@ html = """
         };
         
         stopBtn.onclick = function() {
+            console.log('⏹️ Stopping call...');
             isListening = false;
+            isCallActive = false;
             clearTimeout(silenceTimeout);
             
+            // Stop any playing audio immediately
+            if (currentAudio) {
+                try {
+                    currentAudio.pause();
+                    currentAudio.currentTime = 0;
+                    currentAudio = null;
+                    console.log('✅ Stopped audio playback');
+                } catch (e) {
+                    console.error('Error stopping audio:', e);
+                }
+            }
+            
             if (recognition) {
-                recognition.stop();
+                try {
+                    recognition.onresult = null;
+                    recognition.onend = null;
+                    recognition.onerror = null;
+                    recognition.stop();
+                } catch (e) {
+                    console.error('Error stopping recognition:', e);
+                }
             }
+            
             if (ws) {
-                ws.send(JSON.stringify({ type: 'end' }));
-                ws.close();
+                try {
+                    ws.send(JSON.stringify({ type: 'end' }));
+                } catch (e) {}
+                try {
+                    ws.close();
+                } catch (e) {}
+                ws = null;
             }
+            
             synthesis.cancel();
             
             if (audioContext) {
-                audioContext.close();
+                try {
+                    audioContext.close();
+                } catch (e) {
+                    console.error('Error closing audio context:', e);
+                }
             }
             
             startBtn.style.display = 'inline-block';
@@ -515,6 +769,23 @@ html = """
             status.textContent = '📞 Call ended';
             status.className = 'status';
         };
+        
+        // Load voices when available (important for better voice selection)
+        if (synthesis.onvoiceschanged !== undefined) {
+            synthesis.onvoiceschanged = () => {
+                const voices = synthesis.getVoices();
+                console.log('🎵 Voices loaded:', voices.length);
+                voices.forEach(v => console.log('  -', v.name, '(' + v.lang + ')'));
+            };
+        }
+        
+        // Also try to load voices immediately
+        setTimeout(() => {
+            const voices = synthesis.getVoices();
+            if (voices.length > 0) {
+                console.log('🎵 Initial voices loaded:', voices.length);
+            }
+        }, 100);
         
         // Load voices when available
         if (speechSynthesis.onvoiceschanged !== undefined) {
@@ -579,8 +850,31 @@ async def websocket_endpoint(websocket: WebSocket):
                 
                 conversation_history.append({"role": "user", "content": user_text})
                 
-                # Check for goodbye
-                if any(word in user_text.lower() for word in ['goodbye', 'bye', 'thank you', 'thanks', "that's all"]):
+                # Check for goodbye - be more strict to avoid premature endings
+                # Only end if user clearly wants to end (not just saying "thank you" mid-conversation)
+                user_lower = user_text.lower().strip()
+                goodbye_phrases = [
+                    'goodbye', 'bye bye', 'bye for now', 'see you later',
+                    "that's all", "that's all for now", "nothing else",
+                    "i'm done", "i'm finished", "we're done", "we're finished"
+                ]
+                # Also check for "thank you" only if it's standalone or with ending context
+                if any(phrase in user_lower for phrase in goodbye_phrases):
+                    farewell = get_varied_farewell()
+                    conversation_history.append({"role": "assistant", "content": farewell})
+                    
+                    await websocket.send_text(json.dumps({
+                        'type': 'response',
+                        'text': farewell,
+                        'endcall': True
+                    }))
+                    
+                    # Update call record
+                    update_call_record(call_id, conversation_history, 'completed')
+                    break
+                # Check for standalone "thank you" or "thanks" only if conversation is longer
+                elif len(conversation_history) > 4 and (user_lower == 'thank you' or user_lower == 'thanks'):
+                    # Only end if user says just "thank you" after a longer conversation
                     farewell = get_varied_farewell()
                     conversation_history.append({"role": "assistant", "content": farewell})
                     

@@ -36,7 +36,7 @@ class AIAgent:
     
     async def process_input(self, user_input, conversation_history, call_id=None):
         """
-        Process user input and generate response with better error handling
+        Process user input and generate intelligent, human-like response using Ollama
         
         Args:
             user_input: User's spoken text
@@ -47,6 +47,10 @@ class AIAgent:
             str: AI response
         """
         try:
+            # Ensure we always have a call_id for state tracking
+            if call_id is None:
+                call_id = "web_session"
+
             # Classify intent
             intent = self.intent_classifier.classify(user_input)
             logger.info(f"Detected intent: {intent}")
@@ -58,7 +62,8 @@ class AIAgent:
                     "customer_id": None,
                     "verified": False,
                     "data_collected": {},
-                    "retry_count": 0
+                    "retry_count": 0,
+                    "awaiting_customer_id": False
                 }
             else:
                 self.conversation_state[call_id]["intent"] = intent
@@ -86,28 +91,44 @@ class AIAgent:
                         logger.info(f"Customer {potential_id} verified")
                         break
             
-            # Route to appropriate handler
-            if intent == "greeting":
-                return self.handle_greeting()
+            # Handle structured tasks first (customer verification, ticket creation, etc.)
+            # Then use Ollama to generate natural, conversational responses
             
-            elif intent == "billing":
-                return await self.handle_billing(user_input, call_id)
+            # Get customer info if verified
+            customer = None
+            if state.get("customer_id"):
+                customer = self.get_customer(state["customer_id"])
+            
+            # Handle specific intents with structured logic + LLM enhancement
+            if intent == "billing":
+                return await self.handle_billing_smart(user_input, call_id, conversation_history, customer)
             
             elif intent == "technical_support":
-                return await self.handle_technical_support(user_input, call_id)
+                return await self.handle_technical_support_smart(user_input, call_id, conversation_history, customer)
             
             elif intent == "account_info":
-                return await self.handle_account_info(user_input, call_id)
+                return await self.handle_account_info_smart(user_input, call_id, conversation_history, customer)
             
             elif intent == "new_service":
-                return await self.handle_new_service(user_input, call_id)
+                return await self.handle_new_service_smart(user_input, call_id, conversation_history)
             
             else:
-                return await self.handle_general(user_input, conversation_history)
+                # Use Ollama for all other queries (including greetings)
+                return await self.get_smart_response(user_input, conversation_history, call_id, customer, intent)
                 
         except Exception as e:
             logger.error(f"Error processing input: {e}")
-            # Better error response
+            # Better error response using LLM if available
+            if self.use_llm:
+                try:
+                    return await self.get_llm_response(
+                        "I'm having trouble understanding. Could you please rephrase that?",
+                        conversation_history
+                    )
+                except:
+                    pass
+            
+            # Fallback error response
             if call_id and call_id in self.conversation_state:
                 state = self.conversation_state[call_id]
                 state["retry_count"] = state.get("retry_count", 0) + 1
@@ -120,11 +141,12 @@ class AIAgent:
                 return "I apologize, I'm having trouble processing your request. Could you please try again?"
     
     def handle_greeting(self):
-        """Handle greeting intent"""
-        return "Hello! I'm here to help you. What can I assist you with today?"
+        """Handle greeting intent (now uses LLM via get_smart_response)"""
+        # This will be handled by get_smart_response in the main process_input method
+        pass
     
-    async def handle_billing(self, user_input, call_id):
-        """Handle billing-related queries"""
+    async def handle_billing_smart(self, user_input, call_id, conversation_history, customer=None):
+        """Handle billing-related queries with smart LLM responses"""
         state = self.conversation_state[call_id]
         
         # Check if customer is verified
@@ -139,22 +161,89 @@ class AIAgent:
                         state["verified"] = True
                         state["awaiting_customer_id"] = False
                         
-                        # Return billing info
-                        return f"Thank you for verifying. Your current balance is ${customer.balance:.2f}. Your plan is {customer.plan}. Is there anything else I can help you with?"
+                        # ACTUALLY PROVIDE THE BILLING INFO - don't just ask Ollama
+                        billing_info = (
+                            f"Thanks, {customer.name}. I found your account. "
+                            f"Your current balance is ${customer.balance:.2f} and your plan is {customer.plan}. "
+                            "Would you like to make a payment or have any other questions?"
+                        )
+                        
+                        # Use LLM to make it sound more natural if available
+                        if self.use_llm:
+                            try:
+                                enhanced = await self.get_smart_response(
+                                    f"Customer {customer.name} provided ID {customer_id}. Their balance is ${customer.balance:.2f} and plan is {customer.plan}. "
+                                    "Generate a friendly, natural response sharing this exact information. Keep it concise.",
+                                    conversation_history, call_id, customer, "billing"
+                                )
+                                return enhanced
+                            except:
+                                pass
+                        
+                        return billing_info
                     else:
-                        return "I couldn't find that customer ID. Could you please provide it again?"
+                        return await self.get_smart_response(
+                            f"I couldn't find customer ID {customer_id}. Generate a friendly response saying the account wasn't found and offer to create one.",
+                            conversation_history, call_id, None, "billing"
+                        )
                 else:
-                    return "I didn't catch that. Could you please provide your customer ID?"
+                    state["awaiting_customer_id"] = True
+                    return await self.get_smart_response(
+                        "I didn't catch the customer ID. Ask them to provide it again in a friendly way.",
+                        conversation_history, call_id, None, "billing"
+                    )
             else:
                 state["awaiting_customer_id"] = True
-                return "I'd be happy to help with your billing. Can you please provide your customer ID for verification?"
+                # ACTUALLY ASK FOR ID - don't just delegate to Ollama
+                response = "I'd be happy to help with your billing. Can you please provide your customer ID for verification?"
+                
+                # Enhance with LLM if available
+                if self.use_llm:
+                    try:
+                        enhanced = await self.get_smart_response(
+                            "Customer wants billing help. Ask for their customer ID in a friendly, natural way.",
+                            conversation_history, call_id, None, "billing"
+                        )
+                        return enhanced
+                    except:
+                        pass
+                
+                return response
         else:
-            # Customer already verified, provide billing info
-            customer = self.get_customer(state["customer_id"])
-            return f"Your current balance is ${customer.balance:.2f}. Would you like to make a payment or have any other questions?"
+            # Customer already verified, provide billing info using LLM
+            if not customer:
+                customer = self.get_customer(state["customer_id"])
+            
+            if not customer:
+                state["verified"] = False
+                state["awaiting_customer_id"] = True
+                return await self.get_smart_response(
+                    "I couldn't find the customer account. Ask for their customer ID again.",
+                    conversation_history, call_id, None, "billing"
+                )
+            
+            # ACTUALLY PROVIDE THE INFO
+            billing_info = (
+                f"{customer.name}, your current balance is ${customer.balance:.2f} and your plan is {customer.plan}. "
+                "Would you like to make a payment or have any other questions?"
+            )
+            
+            # Enhance with LLM if available
+            if self.use_llm:
+                try:
+                    enhanced = await self.get_smart_response(
+                        f"Customer {customer.name} is asking about billing again. Their balance is ${customer.balance:.2f} and plan is {customer.plan}. "
+                        "Generate a natural, friendly response sharing this information.",
+                        conversation_history, call_id, customer, "billing"
+                    )
+                    return enhanced
+                except:
+                    pass
+            
+            return billing_info
     
-    async def handle_technical_support(self, user_input, call_id):
-        """Handle technical support requests"""
+    async def handle_technical_support_smart(self, user_input, call_id, conversation_history, customer=None):
+        """Handle technical support requests with smart LLM responses"""
         state = self.conversation_state[call_id]
         
         if not state["verified"]:
@@ -166,17 +255,41 @@ class AIAgent:
                         state["customer_id"] = customer_id
                         state["verified"] = True
                         state["awaiting_customer_id"] = False
-                        return "Thank you. Can you please describe the technical issue you're experiencing?"
+                        return await self.get_smart_response(
+                            f"Customer {customer.name} provided their ID. Ask them to describe their technical issue in a friendly way.",
+                            conversation_history, call_id, customer, "technical_support"
+                        )
                     else:
-                        return "I couldn't find that customer ID. Please try again."
+                        return await self.get_smart_response(
+                            f"Customer ID {customer_id} not found. Generate a friendly response saying the account wasn't found and offer to create one.",
+                            conversation_history, call_id, None, "technical_support"
+                        )
                 else:
-                    return "Could you please provide your customer ID?"
+                    state["awaiting_customer_id"] = True
+                    return await self.get_smart_response(
+                        "Ask the customer for their customer ID in a friendly way.",
+                        conversation_history, call_id, None, "technical_support"
+                    )
             else:
                 state["awaiting_customer_id"] = True
-                return "I'll help you with that technical issue. First, can you provide your customer ID?"
+                return await self.get_smart_response(
+                    "Customer needs technical support. Ask for their customer ID first in a friendly, natural way.",
+                    conversation_history, call_id, None, "technical_support"
+                )
         else:
             # Create support ticket
             if not state.get("ticket_created"):
+                if not customer:
+                    customer = self.get_customer(state["customer_id"])
+                
+                if not customer:
+                    state["verified"] = False
+                    state["awaiting_customer_id"] = True
+                    return await self.get_smart_response(
+                        "Customer account not found. Ask for their customer ID again.",
+                        conversation_history, call_id, None, "technical_support"
+                    )
+                
                 ticket = self.create_ticket(
                     customer_id=state["customer_id"],
                     issue_type="technical_support",
@@ -184,12 +297,20 @@ class AIAgent:
                 )
                 state["ticket_created"] = True
                 
-                return f"I've created a support ticket #{ticket.id} for your issue. Our technical team will contact you within 24 hours. Is there anything else I can help you with?"
+                return await self.get_smart_response(
+                    f"I've created support ticket #{ticket.id} for customer {customer.name}. "
+                    "Generate a friendly, natural response confirming the ticket was created and that our team will contact them within 24 hours. "
+                    "Ask if there's anything else you can help with.",
+                    conversation_history, call_id, customer, "technical_support"
+                )
             else:
-                return "Your ticket has already been created. Our team will reach out soon. Anything else I can assist with?"
+                return await self.get_smart_response(
+                    "The ticket was already created. Generate a friendly reminder that the team will reach out soon and ask if there's anything else.",
+                    conversation_history, call_id, customer, "technical_support"
+                )
     
-    async def handle_account_info(self, user_input, call_id):
-        """Handle account information requests"""
+    async def handle_account_info_smart(self, user_input, call_id, conversation_history, customer=None):
+        """Handle account information requests with smart LLM responses"""
         state = self.conversation_state[call_id]
         
         if not state["verified"]:
@@ -202,60 +323,144 @@ class AIAgent:
                         state["verified"] = True
                         state["awaiting_customer_id"] = False
                         
-                        return f"Here's your account information: Name: {customer.name}, Phone: {customer.phone}, Plan: {customer.plan}, Status: {customer.status}. What else would you like to know?"
+                        return await self.get_smart_response(
+                            f"Customer {customer.name} provided their ID. Their account info: Phone: {customer.phone}, Plan: {customer.plan}, Status: {customer.status}. "
+                            "Generate a friendly, natural response sharing this information and asking what else they'd like to know.",
+                            conversation_history, call_id, customer, "account_info"
+                        )
                     else:
-                        return "Customer ID not found. Please try again."
+                        return await self.get_smart_response(
+                            f"Customer ID {customer_id} not found. Generate a friendly response saying the account wasn't found and offer to create one.",
+                            conversation_history, call_id, None, "account_info"
+                        )
                 else:
-                    return "Please provide your customer ID."
+                    state["awaiting_customer_id"] = True
+                    return await self.get_smart_response(
+                        "Ask the customer to provide their customer ID in a friendly way.",
+                        conversation_history, call_id, None, "account_info"
+                    )
             else:
                 state["awaiting_customer_id"] = True
-                return "I can help you with your account information. Please provide your customer ID."
+                return await self.get_smart_response(
+                    "Customer wants account information. Ask for their customer ID in a friendly, natural way.",
+                    conversation_history, call_id, None, "account_info"
+                )
         else:
-            customer = self.get_customer(state["customer_id"])
-            return f"Your account status is {customer.status}. Your current plan is {customer.plan}. Anything else?"
+            if not customer:
+                customer = self.get_customer(state["customer_id"])
+            
+            if not customer:
+                state["verified"] = False
+                state["awaiting_customer_id"] = True
+                return await self.get_smart_response(
+                    "Customer account not found. Ask for their customer ID again.",
+                    conversation_history, call_id, None, "account_info"
+                )
+            
+            return await self.get_smart_response(
+                f"Customer {customer.name} is asking about their account. Status: {customer.status}, Plan: {customer.plan}. "
+                "Generate a natural, friendly response sharing this information and asking if there's anything else.",
+                conversation_history, call_id, customer, "account_info"
+            )
     
-    async def handle_new_service(self, user_input, call_id):
-        """Handle new service requests"""
-        return "I'd be happy to help you with a new service. Let me transfer you to our sales team who can assist you better with available plans and pricing."
+    async def handle_new_service_smart(self, user_input, call_id, conversation_history):
+        """Handle new service requests with smart LLM responses"""
+        return await self.get_smart_response(
+            "Customer is interested in a new service. Generate a friendly, natural response saying you'd be happy to help and that you'll transfer them to the sales team for available plans and pricing.",
+            conversation_history, call_id, None, "new_service"
+        )
     
     async def handle_general(self, user_input, conversation_history):
-        """Handle general queries using LLM or knowledge base"""
-        if self.use_llm:
-            return await self.get_llm_response(user_input, conversation_history)
-        else:
-            # Use knowledge base
-            response = self.knowledge_base.get_response(user_input)
-            return response or "I'm not sure I understand. Could you please rephrase that or let me transfer you to a human agent?"
+        """Handle general queries using LLM (now uses get_smart_response)"""
+        return await self.get_smart_response(user_input, conversation_history, "web_session", None, None)
     
-    async def get_llm_response(self, user_input, conversation_history):
-        """Get response from LLM"""
+    async def get_smart_response(self, user_input, conversation_history, call_id, customer=None, intent=None):
+        """
+        Get intelligent, human-like response using Ollama with full context
+        """
+        if not self.use_llm:
+            # Fallback to knowledge base
+            response = self.knowledge_base.get_response(user_input)
+            return response or "I'm here to help! Could you tell me more about what you need?"
+        
         try:
-            # Build context
-            context = self.knowledge_base.get_context()
+            state = self.conversation_state.get(call_id, {})
             
-            # Build messages
+            # Build comprehensive context
+            context_parts = [
+                f"You are a friendly, professional customer service agent for {config.COMPANY_NAME}.",
+                "You are speaking with a customer over the phone. Be conversational, natural, and helpful.",
+                "Keep responses concise (1-2 sentences) since this is a voice conversation.",
+                "Be empathetic and understanding. Use natural language, not robotic responses.",
+            ]
+            
+            # Add customer context if available
+            if customer:
+                context_parts.append(
+                    f"Customer Information: Name: {customer.name}, "
+                    f"Plan: {customer.plan}, Balance: ${customer.balance:.2f}, Status: {customer.status}"
+                )
+            
+            # Add intent context
+            if intent:
+                context_parts.append(f"Customer's intent appears to be: {intent.replace('_', ' ')}")
+            
+            # Add state context
+            if state.get("awaiting_customer_id"):
+                context_parts.append("You are currently waiting for the customer to provide their customer ID.")
+            
+            # Add knowledge base context
+            kb_context = self.knowledge_base.get_context()
+            context_parts.append(kb_context)
+            
+            # Build system message
+            system_message = " ".join(context_parts)
+            
+            # Build messages with full conversation history
             messages = [
                 {
                     "role": "system",
-                    "content": f"You are a helpful customer service agent for {config.COMPANY_NAME}. {context}"
+                    "content": system_message
                 }
             ]
             
-            # Add conversation history
-            for msg in conversation_history[-6:]:  # Last 3 turns
+            # Add conversation history (last 10 messages for better context)
+            for msg in conversation_history[-10:]:
                 messages.append(msg)
+            
+            # Add current user input
+            messages.append({
+                "role": "user",
+                "content": user_input
+            })
+            
+            logger.info(f"Calling Ollama with {len(messages)} messages")
             
             # Get response from Ollama
             response = ollama.chat(
                 model=config.LLM_MODEL,
-                messages=messages
+                messages=messages,
+                options={
+                    "temperature": 0.7,  # More creative/conversational
+                    "top_p": 0.9,
+                    "num_predict": 150  # Limit response length for voice
+                }
             )
             
-            return response['message']['content']
+            ai_response = response['message']['content'].strip()
+            logger.info(f"Ollama response: {ai_response[:100]}...")
+            
+            return ai_response
             
         except Exception as e:
             logger.error(f"LLM error: {e}")
-            return "I apologize, I'm having trouble right now. Let me transfer you to an agent."
+            # Fallback to knowledge base
+            response = self.knowledge_base.get_response(user_input)
+            return response or "I apologize, I'm having trouble right now. Could you please repeat that?"
+    
+    async def get_llm_response(self, user_input, conversation_history):
+        """Get response from LLM (legacy method, now uses get_smart_response)"""
+        return await self.get_smart_response(user_input, conversation_history, "web_session", None, None)
     
     def classify_intent(self, text):
         """Classify user intent"""
